@@ -244,6 +244,7 @@ footer { color: var(--muted); font-size: 0.8125rem; text-align: center; padding-
     </div>
     <div class="topr">
       <button class="sbtn" id="signout" type="button" hidden>Sign out</button>
+      <button class="sbtn" id="music" type="button" aria-label="Turn ambient music on" aria-pressed="false"></button>
       <button class="sbtn" id="sound" type="button" aria-label="Turn sound off" aria-pressed="true"></button>
       <button class="sbtn" id="theme" type="button" aria-label="Switch to light mode"></button>
     </div>
@@ -665,40 +666,108 @@ window.FIREBASE_CONFIG = {
     resize(); requestAnimationFrame(loop);
   }
 
-  /* ---------- sound (synthesised, no files) ---------- */
-  var AC = null, soundOn = true;
-  try { soundOn = localStorage.getItem("shelf-sound") !== "off"; } catch (e) {}
-  function ac() {
-    if (!soundOn) return null;
-    try { if (!AC) { var C = window.AudioContext || window.webkitAudioContext; if (!C) return null; AC = new C(); } if (AC.state === "suspended") AC.resume(); return AC; } catch (e) { return null; }
+  /* ---------- sound (synthesised in the browser, no files) ---------- */
+  var AC = null, soundOn = true, musicOn = false, REV = null, BUS = null;
+  try { soundOn = localStorage.getItem("shelf-sound") !== "off"; musicOn = localStorage.getItem("shelf-music") === "on"; } catch (e) {}
+  function ctx() {
+    try {
+      if (!AC) {
+        var C = window.AudioContext || window.webkitAudioContext; if (!C) return null; AC = new C();
+        var len = Math.floor(AC.sampleRate * 4.2), ir = AC.createBuffer(2, len, AC.sampleRate), ch, i, d, lp;
+        for (ch = 0; ch < 2; ch++) { d = ir.getChannelData(ch); lp = 0; for (i = 0; i < len; i++) { lp += ((Math.random() * 2 - 1) - lp) * 0.35; d[i] = lp * Math.pow(1 - i / len, 2.6); } }
+        REV = AC.createConvolver(); REV.buffer = ir;
+        var wet = AC.createGain(); wet.gain.value = 0.9; REV.connect(wet); wet.connect(AC.destination);
+        BUS = AC.createGain(); BUS.gain.value = 1; BUS.connect(AC.destination); BUS.connect(REV);
+      }
+      if (AC.state === "suspended") AC.resume(); return AC;
+    } catch (e) { return null; }
   }
-  function tone(c, t0, f0, f1, dur, gain, type) {
-    var o = c.createOscillator(), g = c.createGain(); o.type = type || "sine"; o.frequency.setValueAtTime(f0, t0);
-    if (f1) o.frequency.exponentialRampToValueAtTime(f1, t0 + dur);
-    g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(gain, t0 + 0.03); g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-    o.connect(g); g.connect(c.destination); o.start(t0); o.stop(t0 + dur + 0.05);
+  function ac() { return soundOn ? ctx() : null; }
+  /* one soft voice: slow attack, long tail, through the reverb */
+  function voice(c, out, t0, f, attack, hold, rel, peak, type, detune, lpf) {
+    var o = c.createOscillator(), g = c.createGain(), end = t0 + attack + hold + rel;
+    o.type = type || "sine"; o.frequency.setValueAtTime(f, t0); if (detune) o.detune.value = detune;
+    g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(peak, t0 + attack); g.gain.setValueAtTime(peak, t0 + attack + hold); g.gain.exponentialRampToValueAtTime(0.0001, end);
+    var node = o; if (lpf) { var fl = c.createBiquadFilter(); fl.type = "lowpass"; fl.frequency.value = lpf; o.connect(fl); node = fl; }
+    node.connect(g); g.connect(out); o.start(t0); o.stop(end + 0.1); return o;
   }
-  function whoosh(c, t0, dur, up) {
+  function breath(c, out, t0, dur, f0, f1, peak) {
     var n = Math.floor(c.sampleRate * dur), buf = c.createBuffer(1, n, c.sampleRate), d = buf.getChannelData(0), i;
     for (i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
-    var src = c.createBufferSource(); src.buffer = buf; var f = c.createBiquadFilter(); f.type = "bandpass"; f.Q.value = 1.1;
-    f.frequency.setValueAtTime(up ? 250 : 2200, t0); f.frequency.exponentialRampToValueAtTime(up ? 2200 : 250, t0 + dur);
-    var g = c.createGain(); g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(0.07, t0 + dur * 0.45); g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-    src.connect(f); f.connect(g); g.connect(c.destination); src.start(t0);
+    var src = c.createBufferSource(); src.buffer = buf; var f = c.createBiquadFilter(); f.type = "bandpass"; f.Q.value = 3;
+    f.frequency.setValueAtTime(f0, t0); f.frequency.exponentialRampToValueAtTime(f1, t0 + dur);
+    var g = c.createGain(); g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(peak, t0 + dur * 0.5); g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    src.connect(f); f.connect(g); g.connect(out); src.start(t0);
   }
   function sfx(kind) {
-    var c = ac(); if (!c) return; var t = c.currentTime + 0.01;
+    var c = ac(); if (!c) return; var t = c.currentTime + 0.02;
     try {
-      if (kind === "galaxy") { whoosh(c, t, 0.8, true); tone(c, t, 160, 640, 0.8, 0.1, "sine"); [784, 1047, 1568].forEach(function (f, i) { tone(c, t + 0.3 + i * 0.11, f, null, 1.0, 0.045, "sine"); }); }
-      else if (kind === "out") { whoosh(c, t, 0.55, false); tone(c, t, 620, 170, 0.6, 0.08, "sine"); }
-      else if (kind === "book") { tone(c, t, 1320, null, 0.4, 0.06, "sine"); tone(c, t + 0.07, 1760, null, 0.45, 0.035, "sine"); }
+      if (kind === "galaxy") {
+        breath(c, BUS, t, 2.2, 260, 1500, 0.05);
+        voice(c, BUS, t, 82.4, 0.7, 0.3, 2.6, 0.12, "sine", 0, 500);
+        voice(c, BUS, t + 0.1, 123.5, 0.9, 0.3, 2.8, 0.07, "triangle", -6, 700);
+        voice(c, BUS, t + 0.25, 246.9, 1.0, 0.2, 3.0, 0.045, "sine", 5, 1400);
+        voice(c, BUS, t + 0.6, 987.8, 1.1, 0.1, 3.2, 0.014, "sine", 0, 0);
+        voice(c, BUS, t + 0.7, 1480, 1.2, 0.1, 3.2, 0.008, "sine", 7, 0);
+      } else if (kind === "out") {
+        breath(c, BUS, t, 1.6, 1400, 220, 0.04);
+        voice(c, BUS, t, 110, 0.35, 0.1, 2.2, 0.09, "sine", 0, 600);
+        voice(c, BUS, t + 0.05, 164.8, 0.4, 0.1, 2.2, 0.05, "triangle", 4, 800);
+      } else if (kind === "book") {
+        voice(c, BUS, t, 493.9, 0.14, 0.05, 1.8, 0.05, "sine", 0, 2400);
+        voice(c, BUS, t + 0.02, 740.0, 0.2, 0.05, 2.0, 0.02, "sine", 6, 0);
+      }
     } catch (e) {}
+  }
+
+  /* ---------- ambient music: a slow, endless, generated drone ---------- */
+  var MU = { master: null, timer: null, stars: null, step: 0 };
+  var CHORDS = [[73.42, 110.0, 174.6, 261.6, 329.6], [58.27, 116.5, 146.8, 220.0, 261.6], [98.0, 146.8, 196.0, 233.1, 293.7], [55.0, 110.0, 164.8, 220.0, 261.6]];
+  var STARS = [587.3, 659.3, 698.5, 880.0, 1046.5, 1174.7, 1318.5];
+  function chord(c, m, t0) {
+    var notes = CHORDS[MU.step % CHORDS.length]; MU.step++;
+    notes.forEach(function (f, i) {
+      [-5, 5].forEach(function (cents) {
+        var o = voice(c, m, t0 + i * 0.4, f, 7, 8, 10, 0.05 / (1 + i * 0.35), i % 2 ? "triangle" : "sine", cents, 700);
+        try { var lfo = c.createOscillator(), lg = c.createGain(); lfo.frequency.value = 0.05 + Math.random() * 0.07; lg.gain.value = 9; lfo.connect(lg); lg.connect(o.detune); lfo.start(t0); lfo.stop(t0 + 26); } catch (e) {}
+      });
+    });
+  }
+  function twinkleNote(c, m) {
+    if (!MU.master || MU.master !== m) return;
+    var f = STARS[Math.floor(Math.random() * STARS.length)];
+    voice(c, m, c.currentTime + 0.05, f, 0.5, 0.1, 5, 0.018 + Math.random() * 0.012, "sine", 0, 0);
+    MU.stars = setTimeout(function () { twinkleNote(c, m); }, 4500 + Math.random() * 7000);
+  }
+  function startMusic() {
+    var c = ctx(); if (!c || MU.master) return; var m = c.createGain();
+    m.gain.setValueAtTime(0.0001, c.currentTime); m.gain.exponentialRampToValueAtTime(0.9, c.currentTime + 5);
+    m.connect(BUS); MU.master = m; MU.step = 0;
+    voice(c, m, c.currentTime, 36.7, 6, 400, 8, 0.07, "sine", 0, 200);
+    (function loop() { if (MU.master !== m) return; chord(c, m, c.currentTime + 0.05); MU.timer = setTimeout(loop, 14000); })();
+    MU.stars = setTimeout(function () { twinkleNote(c, m); }, 3000);
+  }
+  function stopMusic() {
+    var m = MU.master; if (!m) return; MU.master = null; clearTimeout(MU.timer); clearTimeout(MU.stars);
+    try { m.gain.cancelScheduledValues(AC.currentTime); m.gain.setValueAtTime(Math.max(0.0001, m.gain.value), AC.currentTime); m.gain.exponentialRampToValueAtTime(0.0001, AC.currentTime + 2); } catch (e) {}
+    setTimeout(function () { try { m.disconnect(); } catch (e) {} }, 2500);
   }
   var SPK = '<svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9z"/><path d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/></svg>';
   var SPKX = '<svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9z"/><path d="M17 9l5 6M22 9l-5 6"/></svg>';
-  function paintSound() { var b = $("sound"); b.innerHTML = soundOn ? SPK : SPKX; b.setAttribute("aria-pressed", String(soundOn)); b.setAttribute("aria-label", soundOn ? "Turn sound off" : "Turn sound on"); }
+  function paintSound() { var b = $("sound"); b.innerHTML = soundOn ? SPK : SPKX; b.setAttribute("aria-pressed", String(soundOn)); b.setAttribute("aria-label", soundOn ? "Turn sound effects off" : "Turn sound effects on"); }
+  var NOTE = '<svg viewBox="0 0 24 24"><path d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/></svg>';
+  function paintMusic() { var b = $("music"); b.innerHTML = NOTE; b.setAttribute("aria-pressed", String(musicOn)); b.setAttribute("aria-label", musicOn ? "Turn ambient music off" : "Turn ambient music on"); b.style.opacity = musicOn ? "1" : "0.6"; }
+  function initMusic() {
+    paintMusic();
+    $("music").onclick = function () {
+      musicOn = !musicOn; try { localStorage.setItem("shelf-music", musicOn ? "on" : "off"); } catch (e) {}
+      paintMusic(); if (musicOn) startMusic(); else stopMusic();
+    };
+    if (musicOn) { var go = function () { document.removeEventListener("pointerdown", go); if (musicOn) startMusic(); }; document.addEventListener("pointerdown", go); }
+    document.addEventListener("visibilitychange", function () { if (!AC) return; if (document.hidden) AC.suspend(); else if (musicOn || soundOn) AC.resume(); });
+  }
   function initSound() {
-    paintSound();
+    paintSound(); initMusic();
     $("sound").onclick = function () { soundOn = !soundOn; try { localStorage.setItem("shelf-sound", soundOn ? "on" : "off"); } catch (e) {} paintSound(); if (soundOn) sfx("book"); };
   }
 
