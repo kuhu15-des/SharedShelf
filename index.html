@@ -214,6 +214,22 @@ footer { color: var(--muted); font-size: 0.8125rem; text-align: center; padding-
 .top .sbtn { background: var(--surface); border-color: var(--line); color: var(--fg); flex: 0 0 auto; }
 .top .eyebrow, .top .lede { text-shadow: none; }
 .stage .hud.bl { z-index: 2; }
+
+.topr { display: flex; gap: 8px; align-items: center; flex: 0 0 auto; }
+.nightlist {
+  --fg: #eceaff; --muted: #a49ccf; --line: #2c2560; --surface: rgba(255, 255, 255, 0.05); --bg: #07041a;
+  --accent: #a791ff; --accent-fg: #0b0620; --mine: #2a2064;
+  --ok: #6fd1a0; --ok-bg: #12301f; --out: #f0b955; --out-bg: #34270c; --late: #ff9b9b; --late-bg: #3a1c1d;
+  color: var(--fg);
+}
+.listwrap { position: relative; isolation: isolate; overflow: hidden; border-radius: 20px; border: 1px solid var(--line); background: #03020b; }
+.listwrap canvas { position: absolute; inset: 0; width: 100%; height: 100%; z-index: -1; display: block; pointer-events: none; }
+.listwrap .list { background: rgba(8, 5, 26, 0.45); border: 0; border-radius: 0; backdrop-filter: blur(1.5px); -webkit-backdrop-filter: blur(1.5px); }
+.pager { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: center; padding: 14px 12px; border-top: 1px solid var(--line); background: rgba(8, 5, 26, 0.55); }
+.pager .pn { min-width: 38px; padding: 6px 10px; border-radius: 999px; border: 1px solid var(--line); background: transparent; color: var(--fg); cursor: pointer; font-variant-numeric: tabular-nums; }
+.pager .pn[aria-current="page"] { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 600; }
+.pager .pn[disabled] { opacity: 0.4; cursor: default; }
+.pager .pinfo { width: 100%; text-align: center; color: var(--muted); font-size: 0.8125rem; }
 </style>
 </head>
 <body>
@@ -226,11 +242,16 @@ footer { color: var(--muted); font-size: 0.8125rem; text-align: center; padding-
       <div class="stats" id="stats" aria-live="polite"></div>
       <div class="who" id="who"></div>
     </div>
-    <button class="sbtn" id="theme" type="button" aria-label="Switch to light mode"></button>
+    <div class="topr">
+      <button class="sbtn" id="signout" type="button" hidden>Sign out</button>
+      <button class="sbtn" id="sound" type="button" aria-label="Turn sound off" aria-pressed="true"></button>
+      <button class="sbtn" id="theme" type="button" aria-label="Switch to light mode"></button>
+    </div>
   </header>
 
   <section class="stage" id="stage" aria-label="The universe of shelves">
     <canvas id="cosmos" role="img" aria-label="A field of galaxies, one for each friend. Each glowing dot is one of their books. Use the buttons below or the Star chart to browse without the picture."></canvas>
+    <div class="hud tr"><button class="sbtn" id="backbtn" type="button" hidden>All galaxies</button></div>
     <div class="hud bl">
       <div class="gals" id="gals" role="group" aria-label="Galaxies"></div>
       <p class="hint" id="h-hint"></p>
@@ -255,7 +276,7 @@ footer { color: var(--muted); font-size: 0.8125rem; text-align: center; padding-
       <button class="chip" data-st="out" aria-pressed="false">Adrift</button>
     </div>
     <div class="count" id="count" aria-live="polite"></div>
-    <div class="list" id="list"></div>
+    <div class="listwrap nightlist" id="listwrap"><canvas id="listbg"></canvas><canvas id="listtw"></canvas><div class="list" id="list"></div><div class="pager" id="pager" hidden></div></div>
   </section>
 
   <section id="view-loans" hidden><div class="loans" id="loans"></div></section>
@@ -299,7 +320,7 @@ window.FIREBASE_CONFIG = {
 </script>
 <script>
 (function () {
-  var DAY = 86400000, TAU = Math.PI * 2, TWIST = 3.4;
+  var PAGE = 20, DAY = 86400000, TAU = Math.PI * 2, TWIST = 3.4;
   var DEFAULTS = {
     NM: { name: "Nandini Mehta", ord: 1, galaxy: null, uid: null },
     KU: { name: "Kuhu Upadhyay", ord: 2, galaxy: null, uid: null },
@@ -339,7 +360,7 @@ window.FIREBASE_CONFIG = {
   var friends = clone(DEFAULTS), CODES = [], loans = {}, messages = [], joinHash;
   var db = null, uid = null, owner = false, dbState = "loading", me = "", member = false, auth = null, started = false, authReady = false;
   var doorSig = "", drawerSig = "", hudSig = "", galsSig = "";
-  var state = { view: "cat", q: "", owner: "", st: "all", genre: "", lang: "", open: "", due: "", dq: "", downer: "", dmiss: "", edit: null, withP: "", draft: "", focus: "", sel: "",
+  var state = { view: "cat", q: "", owner: "", st: "all", genre: "", lang: "", open: "", due: "", dq: "", downer: "", dmiss: "", edit: null, page: 0, withP: "", draft: "", focus: "", sel: "",
     join: { step: null, code: "", name: "", claim: "", s: 0, a: 1, msg: "", ok: "", change: false, newcode: "", current: "" } };
 
   function fullName(c) { return (friends[c] && friends[c].name) || c || "Someone"; }
@@ -491,9 +512,11 @@ window.FIREBASE_CONFIG = {
     S.inited = true;
   }
   function applyTarget(intro) {
-    S.tx = 0; S.ty = 0; S.shift = 0; S.tshift = 0;
-    S.tz = clamp(Math.min(S.w * 0.94 / (2 * S.ex), (S.h - 84) / (2 * S.ey)), 0.12, 1.6);
-    S.cam.x = 0; S.cam.y = 0; S.cam.lz = Math.log(S.tz); requestDraw();
+    var g = S.gals[state.focus];
+    if (g) { S.tx = g.x; S.ty = g.y; S.tz = clamp(Math.min(S.w, S.h - 76) / (2 * g.R * 1.45), 0.6, 3); }
+    else { S.tx = 0; S.ty = 0; S.tz = clamp(Math.min(S.w * 0.94 / (2 * S.ex), (S.h - 84) / (2 * S.ey)), 0.12, 1.6); }
+    S.tshift = (state.sel && S.w > 700) ? 170 : 0;
+    if (intro || S.reduced) { S.cam.x = S.tx; S.cam.y = S.ty; S.cam.lz = Math.log(S.tz); S.shift = S.tshift; requestDraw(); }
   }
 
   function bodyOff(g, rf, th) { var x = rf * g.R * Math.cos(th), y = rf * g.R * Math.sin(th) * g.tilt; return [x * g.cr - y * g.sr, x * g.sr + y * g.cr]; }
@@ -502,7 +525,7 @@ window.FIREBASE_CONFIG = {
     var c = S.ctx, W = S.w, H = S.h, i; if (!c || !W || !H) return;
     var k = S.reduced ? 1 : 0.08;
     S.cam.x += (S.tx - S.cam.x) * k; S.cam.y += (S.ty - S.cam.y) * k; S.cam.lz += (Math.log(S.tz) - S.cam.lz) * k; S.shift += (S.tshift - S.shift) * k;
-    var z = Math.exp(S.cam.lz), cx = W / 2, cy = (H - 70) / 2 + 8, fo = state.focus;
+    var z = Math.exp(S.cam.lz), cx = W / 2 - S.shift, cy = (H - 70) / 2 + 8, fo = state.focus;
     c.setTransform(S.dpr, 0, 0, S.dpr, 0, 0); c.globalAlpha = 1; c.globalCompositeOperation = "source-over";
     var ox = clamp(-S.cam.x * z * 0.03, -50, 50), oy = clamp(-S.cam.y * z * 0.03, -50, 50);
     c.drawImage(S.bg, -60 + ox, -60 + oy, W + 120, H + 120);
@@ -516,7 +539,7 @@ window.FIREBASE_CONFIG = {
       var dim = fo && fo !== code ? 0.4 : 1;
       drawGalaxy(c, g, sx, sy, z, t, dim);
       S.gpos[code] = { sx: sx, sy: sy, Rz: Rz, g: g };
-      labels.push({ code: code, sx: sx, sy: sy + Rz * 0.85 + 14, dim: dim });
+      if (fo !== code) labels.push({ code: code, sx: sx, sy: sy + Rz * 0.85 + 14, dim: dim });
       var list = owned[code] || [], j, b, p, th, off, loan;
       for (j = 0; j < list.length; j++) {
         b = list[j]; p = bp(b.i); loan = loans[b.i];
@@ -589,7 +612,7 @@ window.FIREBASE_CONFIG = {
     var tip = $("tip"), h = S.hover, bd = null, key = "", title = "", sub = "";
     if (h && h.t === "book") { for (var i = 0; i < S.bodies.length; i++) if (S.bodies[i].id === h.id && S.bodies[i].gcode === h.g) { bd = S.bodies[i]; break; } }
     else if (h && h.t === "gal") {
-      var gp = S.gpos[h.code]; if (gp) { key = "g" + h.code + (owned[h.code] || []).length; title = fullName(h.code) + "'s galaxy"; sub = (owned[h.code] || []).length + " books · tap to show only these"; bd = { sx: gp.sx, sy: gp.sy - gp.Rz * 0.5 }; }
+      var gp = S.gpos[h.code]; if (gp) { key = "g" + h.code + (owned[h.code] || []).length; title = fullName(h.code) + "'s galaxy"; sub = (owned[h.code] || []).length + " books · tap to fly in"; bd = { sx: gp.sx, sy: gp.sy - gp.Rz * 0.5 }; }
     }
     if (!bd && !h && state.sel) { for (var j = 0; j < S.bodies.length; j++) if (S.bodies[j].id === state.sel && S.bodies[j].kind !== "ghost") { bd = S.bodies[j]; h = { t: "book", id: state.sel }; break; } }
     if (h && h.t === "book" && bd) { var b = byId[h.id]; if (b) { key = "b" + b.i + JSON.stringify(loans[b.i] || 0); title = b.t; sub = bookLine(b, bd.kind); } }
@@ -611,11 +634,16 @@ window.FIREBASE_CONFIG = {
     S.canvas.width = Math.round(w * S.dpr); S.canvas.height = Math.round(h * S.dpr);
     buildBg(); S.sig = ""; syncGalaxies(); requestDraw();
   }
-  function focusGalaxy(code) {
-    state.focus = code || ""; state.owner = state.focus; S.hover = null;
-    renderHud(); renderGals(); renderList(); requestDraw();
+  function focusGalaxy(code, quiet) {
+    var was = state.focus;
+    state.focus = code || ""; state.owner = state.focus; state.sel = ""; state.page = 0; S.hover = null;
+    if (!quiet && state.focus !== was) sfx(state.focus ? "galaxy" : "out");
+    applyTarget(false); renderHud(); renderGals(); renderDrawer(); renderList();
   }
-  function selectBook(id) { state.sel = id; renderHud(); renderDrawer(); requestDraw(); }
+  function selectBook(id, gcode) {
+    if (gcode && state.focus !== gcode) { focusGalaxy(gcode); return; }
+    state.sel = id; sfx("book"); applyTarget(false); renderHud(); renderDrawer(); requestDraw();
+  }
   function initCosmos() {
     S.canvas = $("cosmos"); S.ctx = S.canvas.getContext("2d");
     S.reduced = !!(window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches);
@@ -625,15 +653,106 @@ window.FIREBASE_CONFIG = {
     S.canvas.addEventListener("pointerdown", function (e) { pos(e); S.mouse.in = e.pointerType === "mouse"; });
     S.canvas.addEventListener("click", function (e) {
       pos(e); var h = hitTest(S.mouse.x, S.mouse.y);
-      if (h && h.t === "book") selectBook(h.id);
-      else if (h && h.t === "gal") focusGalaxy(state.focus === h.code ? "" : h.code);
+      if (h && h.t === "book") selectBook(h.id, h.g);
+      else if (h && h.t === "gal") { if (state.focus !== h.code) focusGalaxy(h.code); }
       else if (state.sel) { state.sel = ""; applyTarget(false); renderDrawer(); }
       requestDraw();
     });
     document.addEventListener("keydown", function (e) { if (e.key === "Escape") { if (state.sel) { state.sel = ""; applyTarget(false); renderDrawer(); } else if (state.focus) focusGalaxy(""); } });
+    $("backbtn").onclick = function () { focusGalaxy(""); };
     if (window.IntersectionObserver) new IntersectionObserver(function (en) { S.visible = en[0].isIntersecting; }).observe($("stage"));
     if (window.ResizeObserver) new ResizeObserver(resize).observe($("stage")); else window.addEventListener("resize", resize);
     resize(); requestAnimationFrame(loop);
+  }
+
+  /* ---------- sound (synthesised, no files) ---------- */
+  var AC = null, soundOn = true;
+  try { soundOn = localStorage.getItem("shelf-sound") !== "off"; } catch (e) {}
+  function ac() {
+    if (!soundOn) return null;
+    try { if (!AC) { var C = window.AudioContext || window.webkitAudioContext; if (!C) return null; AC = new C(); } if (AC.state === "suspended") AC.resume(); return AC; } catch (e) { return null; }
+  }
+  function tone(c, t0, f0, f1, dur, gain, type) {
+    var o = c.createOscillator(), g = c.createGain(); o.type = type || "sine"; o.frequency.setValueAtTime(f0, t0);
+    if (f1) o.frequency.exponentialRampToValueAtTime(f1, t0 + dur);
+    g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(gain, t0 + 0.03); g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    o.connect(g); g.connect(c.destination); o.start(t0); o.stop(t0 + dur + 0.05);
+  }
+  function whoosh(c, t0, dur, up) {
+    var n = Math.floor(c.sampleRate * dur), buf = c.createBuffer(1, n, c.sampleRate), d = buf.getChannelData(0), i;
+    for (i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+    var src = c.createBufferSource(); src.buffer = buf; var f = c.createBiquadFilter(); f.type = "bandpass"; f.Q.value = 1.1;
+    f.frequency.setValueAtTime(up ? 250 : 2200, t0); f.frequency.exponentialRampToValueAtTime(up ? 2200 : 250, t0 + dur);
+    var g = c.createGain(); g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(0.07, t0 + dur * 0.45); g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    src.connect(f); f.connect(g); g.connect(c.destination); src.start(t0);
+  }
+  function sfx(kind) {
+    var c = ac(); if (!c) return; var t = c.currentTime + 0.01;
+    try {
+      if (kind === "galaxy") { whoosh(c, t, 0.8, true); tone(c, t, 160, 640, 0.8, 0.1, "sine"); [784, 1047, 1568].forEach(function (f, i) { tone(c, t + 0.3 + i * 0.11, f, null, 1.0, 0.045, "sine"); }); }
+      else if (kind === "out") { whoosh(c, t, 0.55, false); tone(c, t, 620, 170, 0.6, 0.08, "sine"); }
+      else if (kind === "book") { tone(c, t, 1320, null, 0.4, 0.06, "sine"); tone(c, t + 0.07, 1760, null, 0.45, 0.035, "sine"); }
+    } catch (e) {}
+  }
+  var SPK = '<svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9z"/><path d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/></svg>';
+  var SPKX = '<svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9z"/><path d="M17 9l5 6M22 9l-5 6"/></svg>';
+  function paintSound() { var b = $("sound"); b.innerHTML = soundOn ? SPK : SPKX; b.setAttribute("aria-pressed", String(soundOn)); b.setAttribute("aria-label", soundOn ? "Turn sound off" : "Turn sound on"); }
+  function initSound() {
+    paintSound();
+    $("sound").onclick = function () { soundOn = !soundOn; try { localStorage.setItem("shelf-sound", soundOn ? "on" : "off"); } catch (e) {} paintSound(); if (soundOn) sfx("book"); };
+  }
+
+  /* ---------- starry backdrop behind the catalogue ---------- */
+  var LB = { w: 0, h: 0, stars: [], glow: null, vis: true, rt: null, last: 0 };
+  function paintSky(c, W, H, dpr) {
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    var g = c.createLinearGradient(0, 0, 0, H); g.addColorStop(0, "#09051c"); g.addColorStop(0.5, "#050313"); g.addColorStop(1, "#03020b"); c.fillStyle = g; c.fillRect(0, 0, W, H);
+    var r = rng(21), cols = ["110,70,230", "50,110,255", "150,20,60", "140,60,220", "190,35,70", "70,90,240"], i, n = Math.max(5, Math.round(H / 140));
+    for (i = 0; i < n; i++) {
+      var cx = r() * W, cy = r() * H, ang = -0.35 + (r() - 0.5) * 0.35, th = 50 + r() * 120, col = cols[i % cols.length];
+      c.save(); c.translate(cx, cy); c.rotate(ang); c.scale(Math.max(2, W / th * 0.45 * (0.6 + r() * 0.6)), 1);
+      var rg = c.createRadialGradient(0, 0, 0, 0, 0, th);
+      rg.addColorStop(0, "rgba(" + col + "," + (0.15 + r() * 0.1).toFixed(2) + ")"); rg.addColorStop(0.5, "rgba(" + col + ",0.05)"); rg.addColorStop(1, "rgba(" + col + ",0)");
+      c.fillStyle = rg; c.beginPath(); c.arc(0, 0, th, 0, TAU); c.fill(); c.restore();
+    }
+    var ribbons = Math.max(2, Math.round(H / 320));
+    for (i = 0; i < ribbons; i++) {
+      var y0 = r() * H, a2 = -0.3 + (r() - 0.5) * 0.25, col2 = cols[(i * 2 + 1) % cols.length], x1 = -40, x2 = W + 40, y1 = y0 + (x2 - x1) * Math.tan(a2);
+      var lg = c.createLinearGradient(x1, y0, x2, y1); lg.addColorStop(0, "rgba(" + col2 + ",0)"); lg.addColorStop(0.5, "rgba(" + col2 + ",0.25)"); lg.addColorStop(1, "rgba(" + col2 + ",0)");
+      [12, 4, 1.4].forEach(function (w, wi) { c.strokeStyle = lg; c.globalAlpha = [0.12, 0.25, 0.65][wi]; c.lineWidth = w; c.beginPath(); c.moveTo(x1, y0); c.lineTo(x2, y1); c.stroke(); });
+      c.globalAlpha = 1;
+    }
+    var dust = Math.min(700, Math.round(W * H / 2600));
+    for (i = 0; i < dust; i++) { var tn = r(), sc = tn < 0.15 ? "255,200,200" : tn < 0.4 ? "200,215,255" : "255,255,255"; c.fillStyle = "rgba(" + sc + "," + (0.2 + r() * 0.55).toFixed(2) + ")"; var sz = 0.4 + r() * 1.1; c.fillRect(r() * W, r() * H, sz, sz); }
+  }
+  function buildListBg() {
+    var wrap = $("listwrap"), w = wrap.clientWidth, h = wrap.clientHeight; if (!w || !h) return;
+    var dpr = Math.min(2, window.devicePixelRatio || 1); if (w * h * dpr * dpr > 7e6) dpr = 1;
+    LB.w = w; LB.h = h; LB.dpr = dpr;
+    var bg = $("listbg"), tw = $("listtw"); bg.width = tw.width = Math.round(w * dpr); bg.height = tw.height = Math.round(h * dpr);
+    paintSky(bg.getContext("2d"), w, h, dpr);
+    var r = rng(5), n = Math.min(150, Math.round(w * h / 9000)), cl = ["255,255,255", "190,210,255", "255,200,210", "210,190,255"];
+    LB.stars = []; for (var i = 0; i < n; i++) LB.stars.push({ x: r() * w, y: r() * h, r: 0.8 + r() * 1.7, f: 0.5 + r() * 1.6, p: r() * TAU, c: cl[Math.floor(r() * cl.length)] });
+    if (!LB.glow) { LB.glow = document.createElement("canvas"); LB.glow.width = LB.glow.height = 32; var gc = LB.glow.getContext("2d"), gr = gc.createRadialGradient(16, 16, 0, 16, 16, 16); gr.addColorStop(0, "rgba(255,255,255,1)"); gr.addColorStop(0.25, "rgba(255,255,255,0.5)"); gr.addColorStop(1, "rgba(255,255,255,0)"); gc.fillStyle = gr; gc.fillRect(0, 0, 32, 32); }
+    drawTwinkle(0);
+  }
+  function drawTwinkle(t) {
+    var tw = $("listtw"), c = tw.getContext("2d"), dpr = LB.dpr || 1; if (!LB.w) return;
+    c.setTransform(dpr, 0, 0, dpr, 0, 0); c.clearRect(0, 0, LB.w, LB.h); c.globalCompositeOperation = "lighter";
+    for (var i = 0; i < LB.stars.length; i++) {
+      var s = LB.stars[i], a = 0.2 + 0.8 * (0.5 + 0.5 * Math.sin(t * s.f + s.p)), gs = s.r * 9;
+      c.globalAlpha = a * 0.55; c.drawImage(LB.glow, s.x - gs / 2, s.y - gs / 2, gs, gs);
+      c.globalAlpha = a; c.fillStyle = "rgba(" + s.c + ",1)"; c.fillRect(s.x - s.r / 2, s.y - s.r / 2, s.r, s.r);
+    }
+    c.globalAlpha = 1; c.globalCompositeOperation = "source-over";
+  }
+  function initListBg() {
+    var wrap = $("listwrap"); S.reduced = S.reduced || !!(window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches);
+    function later() { clearTimeout(LB.rt); LB.rt = setTimeout(buildListBg, 140); }
+    if (window.ResizeObserver) new ResizeObserver(later).observe(wrap); else window.addEventListener("resize", later);
+    if (window.IntersectionObserver) new IntersectionObserver(function (en) { LB.vis = en[0].isIntersecting; }).observe(wrap);
+    function tick(ms) { requestAnimationFrame(tick); if (S.reduced || !LB.vis || document.hidden || ms - LB.last < 33) return; LB.last = ms; drawTwinkle(ms / 1000); }
+    buildListBg(); requestAnimationFrame(tick);
   }
 
   /* ---------- HUD ---------- */
@@ -642,8 +761,9 @@ window.FIREBASE_CONFIG = {
     if (f) (owned[f] || []).forEach(function (b) { if (loans[b.i]) away++; });
     $("h-lede").textContent = f
       ? fullName(f) + "'s galaxy: " + n + " books in orbit" + (away ? ", " + away + " adrift with friends." : ".")
-      : "Every friend is a galaxy and every book a glowing star. Hover a dot to read its title.";
-    $("h-hint").textContent = f ? "Showing " + firstName(f) + "'s books in the list below. Tap their name again, or press Esc, to show everyone." : "Tap a name to show just one friend's books. Red stars are books visiting another galaxy.";
+      : "Every friend is a galaxy and every book a glowing star. Touch a galaxy to fly into it.";
+    $("h-hint").textContent = f ? "Hover a glowing dot to read its title and tap it to borrow. Tap All galaxies, or press Esc, to fly back out." : "Hover a dot to read a title. Red stars are books visiting another galaxy.";
+    $("backbtn").hidden = !f;
   }
   function renderStats() {
     var out = Object.keys(loans).length; $("stats").innerHTML = "";
@@ -733,16 +853,15 @@ window.FIREBASE_CONFIG = {
     if (!auth) return;
     if (!uid) { var si = el("button", "btn small", "Sign in with Google"); si.type = "button"; si.onclick = openDoor; w.insertBefore(si, w.firstChild); return; }
     if (!member) { var gt = el("button", "btn small", "Enter the gate code"); gt.type = "button"; gt.onclick = openDoor; w.insertBefore(gt, w.firstChild); return; }
-    var out = el("button", "linkbtn", "Sign out"); out.type = "button"; out.onclick = function () { auth.signOut().then(function () { location.reload(); }); };
     if (me) {
       var line = el("span"); line.appendChild(document.createTextNode("Signed in as ")); line.appendChild(el("b", null, fullName(me))); w.insertBefore(line, w.firstChild);
       var cf = el("button", "linkbtn", "Reshape my galaxy"); cf.type = "button";
       cf.onclick = function () { var g = galaxyOf(me), j = state.join; j.step = "galaxy"; j.change = true; j.claim = ""; j.name = ""; j.s = g.s; j.a = ARMS.indexOf(g.a); j.msg = ""; j.ok = ""; renderDoor(); scrollDoor(); };
       var sw = el("button", "linkbtn", "Not you?"); sw.type = "button";
       sw.onclick = function () { var f = friends[me]; db.doc("friends/" + me).set({ name: f.name, ord: f.ord, galaxy: f.galaxy || null, uid: null }); state.join.step = null; };
-      w.appendChild(cf); w.appendChild(sw); w.appendChild(out); return;
+      w.appendChild(cf); w.appendChild(sw); return;
     }
-    var go = el("button", "btn small", "Claim your galaxy"); go.type = "button"; go.onclick = openDoor; w.insertBefore(go, w.firstChild); w.appendChild(out);
+    var go = el("button", "btn small", "Claim your galaxy"); go.type = "button"; go.onclick = openDoor; w.insertBefore(go, w.firstChild);
   }
   function scrollDoor() { var d = $("door"); if (d && d.scrollIntoView) d.scrollIntoView({ block: "nearest", behavior: "smooth" }); }
   function openDoor() {
@@ -1023,6 +1142,22 @@ window.FIREBASE_CONFIG = {
     head.onclick = function () { state.open = open ? "" : b.i; renderList(); if (!open) { var n = document.getElementById("card-" + b.i); if (n) n.scrollIntoView({ block: "nearest" }); } };
     row.appendChild(head); if (open) row.appendChild(bookCard(b, true)); return row;
   }
+  function renderPager(total) {
+    var pg = $("pager"), pages = Math.max(1, Math.ceil(total / PAGE)), cur = state.page; pg.innerHTML = ""; pg.hidden = pages <= 1; if (pages <= 1) return;
+    function go(n) { state.page = clamp(n, 0, pages - 1); state.open = ""; renderList(); var c = $("count"); if (c && c.scrollIntoView) c.scrollIntoView({ block: "start", behavior: "smooth" }); }
+    function btn(label, n, off, current) {
+      var b = el("button", "pn", label); b.type = "button"; if (off) b.disabled = true; if (current) b.setAttribute("aria-current", "page");
+      b.setAttribute("aria-label", current ? "Page " + (n + 1) + ", current page" : typeof label === "string" && /\d/.test(label) ? "Go to page " + label : label);
+      b.onclick = function () { go(n); }; return b;
+    }
+    pg.appendChild(btn("Previous", cur - 1, cur === 0, false));
+    var show = {}, i; [0, pages - 1, cur - 1, cur, cur + 1].forEach(function (n) { if (n >= 0 && n < pages) show[n] = 1; });
+    var keys = Object.keys(show).map(Number).sort(function (a, b) { return a - b; }), prev = -1;
+    keys.forEach(function (n) { if (prev >= 0 && n - prev > 1) pg.appendChild(el("span", "pinfo", "…")); pg.lastChild && pg.lastChild.className === "pinfo" && (pg.lastChild.style.width = "auto"); pg.appendChild(btn(String(n + 1), n, false, n === cur)); prev = n; });
+    pg.appendChild(btn("Next", cur + 1, cur === pages - 1, false));
+    var a = cur * PAGE + 1, z = Math.min(total, (cur + 1) * PAGE);
+    pg.appendChild(el("span", "pinfo", "Books " + a + " to " + z + " of " + total));
+  }
   function renderList() {
     computeHl();
     var list = $("list"); list.innerHTML = "";
@@ -1030,8 +1165,10 @@ window.FIREBASE_CONFIG = {
     var label = state.owner ? fullName(state.owner) + "'s galaxy · " : "";
     cnt.appendChild(el("span", null, label + (shown.length === books.length ? books.length + " books" : shown.length + " of " + books.length + " books")));
     if (state.owner) { var cl = el("button", "linkbtn", "Show everyone"); cl.type = "button"; cl.onclick = function () { focusGalaxy(""); }; cnt.appendChild(cl); }
+    var pages = Math.max(1, Math.ceil(shown.length / PAGE)); if (state.page >= pages) state.page = pages - 1; if (state.page < 0) state.page = 0;
+    renderPager(shown.length);
     if (!shown.length) { var e = el("div", "empty"); e.appendChild(el("b", null, "No books match")); e.appendChild(document.createTextNode("Clear a filter or try fewer words.")); list.appendChild(e); requestDraw(); return; }
-    shown.forEach(function (b) { list.appendChild(bookRow(b)); }); requestDraw();
+    shown.slice(state.page * PAGE, (state.page + 1) * PAGE).forEach(function (b) { list.appendChild(bookRow(b)); }); requestDraw();
   }
 
   /* ---------- adrift ---------- */
@@ -1251,9 +1388,10 @@ window.FIREBASE_CONFIG = {
     if (!window.firebase || !window.FIREBASE_CONFIG) { dbState = "off"; authReady = true; showDbMsg("Sign-in is unavailable right now. You can still browse the universe."); renderAll(); return; }
     try { firebase.initializeApp(window.FIREBASE_CONFIG); auth = firebase.auth(); db = firebase.firestore(); }
     catch (e) { dbState = "off"; authReady = true; showDbMsg("Could not start sign-in. Reload the page."); renderAll(); return; }
+    $("signout").onclick = function () { auth.signOut().then(function () { location.reload(); }); };
     auth.getRedirectResult().catch(function () {});
     auth.onAuthStateChanged(function (u) {
-      authReady = true; uid = u ? u.uid : null; owner = false; member = false;
+      authReady = true; uid = u ? u.uid : null; owner = false; member = false; $("signout").hidden = !u;
       if (!u) { dbState = "off"; renderAll(); return; }
       checkMember();
     });
@@ -1261,22 +1399,22 @@ window.FIREBASE_CONFIG = {
 
   function start(data) {
     base = data;
-    $("genre").onchange = function () { state.genre = this.value; renderList(); };
-    $("lang").onchange = function () { state.lang = this.value; renderList(); };
+    $("genre").onchange = function () { state.genre = this.value; state.page = 0; renderList(); };
+    $("lang").onchange = function () { state.lang = this.value; state.page = 0; renderList(); };
     var timer = null, t2 = null;
-    $("q").oninput = function () { var v = this.value; clearTimeout(timer); timer = setTimeout(function () { state.q = v.trim(); renderList(); }, 120); };
+    $("q").oninput = function () { var v = this.value; clearTimeout(timer); timer = setTimeout(function () { state.q = v.trim(); state.page = 0; renderList(); }, 120); };
     $("dq").oninput = function () { var v = this.value; clearTimeout(t2); t2 = setTimeout(function () { state.dq = v.trim(); renderData(); }, 120); };
     $("downer").onchange = function () { state.downer = this.value; renderData(); };
     $("dmiss").onchange = function () { state.dmiss = this.value; renderData(); };
     $("addbook").onclick = function () { startNew(); renderData(); };
     Array.prototype.forEach.call(document.querySelectorAll("[data-st]"), function (c) {
       c.onclick = function () {
-        state.st = c.getAttribute("data-st");
+        state.st = c.getAttribute("data-st"); state.page = 0;
         Array.prototype.forEach.call(document.querySelectorAll("[data-st]"), function (x) { x.setAttribute("aria-pressed", String(x === c)); });
         renderList();
       };
     });
-    recompute(); initTheme(); buildNav(); initCosmos(); renderAll(); connect();
+    recompute(); initTheme(); initSound(); buildNav(); initCosmos(); renderAll(); initListBg(); connect();
   }
 
   fetch("books.json").then(function (r) { return r.json(); }).then(start).catch(function () {
